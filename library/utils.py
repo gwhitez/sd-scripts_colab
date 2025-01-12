@@ -7,6 +7,9 @@ from typing import *
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import EulerAncestralDiscreteSchedulerOutput
+import cv2
+from PIL import Image
+import numpy as np
 
 
 def fire_in_thread(f, *args, **kwargs):
@@ -76,8 +79,26 @@ def setup_logging(args=None, log_level=None, reset=False):
 
     if msg_init is not None:
         logger = logging.getLogger(__name__)
-        print(msg_init)
+        logger.info(msg_init)
 
+
+def pil_resize(image, size, interpolation=Image.LANCZOS):
+    has_alpha = image.shape[2] == 4 if len(image.shape) == 3 else False
+
+    if has_alpha:
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA))
+    else:
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+    resized_pil = pil_image.resize(size, interpolation)
+
+    # Convert back to cv2 format
+    if has_alpha:
+        resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGBA2BGRA)
+    else:
+        resized_cv2 = cv2.cvtColor(np.array(resized_pil), cv2.COLOR_RGB2BGR)
+
+    return resized_cv2
 
 
 # TODO make inf_utils.py
@@ -193,7 +214,7 @@ class EulerAncestralDiscreteSchedulerGL(EulerAncestralDiscreteScheduler):
             )
 
         if not self.is_scale_input_called:
-            # print(
+            # logger.warning(
             print(
                 "The `scale_model_input` function should be called before `step` to ensure correct denoising. "
                 "See `StableDiffusionPipeline` for a usage example."

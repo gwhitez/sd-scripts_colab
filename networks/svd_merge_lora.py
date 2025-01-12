@@ -216,12 +216,7 @@ def load_state_dict(file_name, dtype):
     return sd, metadata
 
 
-def save_to_file(file_name, state_dict, dtype, metadata):
-    if dtype is not None:
-        for key in list(state_dict.keys()):
-            if type(state_dict[key]) == torch.Tensor:
-                state_dict[key] = state_dict[key].to(dtype)
-
+def save_to_file(file_name, state_dict, metadata):
     if os.path.splitext(file_name)[1] == ".safetensors":
         save_file(state_dict, file_name, metadata=metadata)
     else:
@@ -256,7 +251,7 @@ def format_lbws(lbws):
 
 
 def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, merge_dtype):
-    print(f"new rank: {new_rank}, new conv rank: {new_conv_rank}")
+    logger.info(f"new rank: {new_rank}, new conv rank: {new_conv_rank}")
     merged_sd = {}
     v2 = None  # This is meaning LoRA Metadata v2, Not meaning SD2
     base_model = None
@@ -268,7 +263,7 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
         LBW_TARGET_IDX = []
 
     for model, ratio, lbw in itertools.zip_longest(models, ratios, lbws):
-        print(f"loading: {model}")
+        logger.info(f"loading: {model}")
         lora_sd, lora_metadata = load_state_dict(model, merge_dtype)
 
         if lora_metadata is not None:
@@ -281,10 +276,10 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
             lbw_weights = [1] * 26
             for index, value in zip(LBW_TARGET_IDX, lbw):
                 lbw_weights[index] = value
-            print(f"lbw: {dict(zip(LAYER26.keys(), lbw_weights))}")
+            logger.info(f"lbw: {dict(zip(LAYER26.keys(), lbw_weights))}")
 
         # merge
-        print(f"merging...")
+        logger.info(f"merging...")
         for key in tqdm(list(lora_sd.keys())):
             if "lora_down" not in key:
                 continue
@@ -301,15 +296,15 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
             out_dim = up_weight.size()[0]
             conv2d = len(down_weight.size()) == 4
             kernel_size = None if not conv2d else down_weight.size()[2:4]
-            # print(lora_module_name, network_dim, alpha, in_dim, out_dim, kernel_size)
+            # logger.info(lora_module_name, network_dim, alpha, in_dim, out_dim, kernel_size)
 
             # make original weight if not exist
             if lora_module_name not in merged_sd:
                 weight = torch.zeros((out_dim, in_dim, *kernel_size) if conv2d else (out_dim, in_dim), dtype=merge_dtype)
-                if device:
-                    weight = weight.to(device)
             else:
                 weight = merged_sd[lora_module_name]
+            if device:
+                weight = weight.to(device)
 
             # merge to weight
             if device:
@@ -341,13 +336,16 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
                 conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
                 weight = weight + ratio * conved * scale
 
-            merged_sd[lora_module_name] = weight
+            merged_sd[lora_module_name] = weight.to("cpu")
 
     # extract from merged weights
-    print("extract new lora...")
+    logger.info("extract new lora...")
     merged_lora_sd = {}
     with torch.no_grad():
         for lora_module_name, mat in tqdm(list(merged_sd.items())):
+            if device:
+                mat = mat.to(device)
+
             conv2d = len(mat.size()) == 4
             kernel_size = None if not conv2d else mat.size()[2:4]
             conv2d_3x3 = conv2d and kernel_size != (1, 1)
@@ -386,7 +384,7 @@ def merge_lora_models(models, ratios, lbws, new_rank, new_conv_rank, device, mer
 
             merged_lora_sd[lora_module_name + ".lora_up.weight"] = up_weight.to("cpu").contiguous()
             merged_lora_sd[lora_module_name + ".lora_down.weight"] = down_weight.to("cpu").contiguous()
-            merged_lora_sd[lora_module_name + ".alpha"] = torch.tensor(module_new_rank)
+            merged_lora_sd[lora_module_name + ".alpha"] = torch.tensor(module_new_rank, device="cpu")
 
     # build minimum metadata
     dims = f"{new_rank}"
@@ -430,7 +428,13 @@ def merge(args):
         args.models, args.ratios, args.lbws, args.new_rank, new_conv_rank, args.device, merge_dtype
     )
 
-    print(f"calculating hashes and creating metadata...")
+    # cast to save_dtype before calculating hashes
+    for key in list(state_dict.keys()):
+        value = state_dict[key]
+        if type(value) == torch.Tensor and value.dtype.is_floating_point and value.dtype != save_dtype:
+            state_dict[key] = value.to(save_dtype)
+
+    logger.info(f"calculating hashes and creating metadata...")
 
     model_hash, legacy_hash = train_util.precalculate_safetensors_hashes(state_dict, metadata)
     metadata["sshs_model_hash"] = model_hash
@@ -445,13 +449,13 @@ def merge(args):
         )
         if v2:
             # TODO read sai modelspec
-            print(
+            logger.warning(
                 "Cannot determine if LoRA is for v-prediction, so save metadata as v-prediction / LoRAがv-prediction用か否か不明なため、仮にv-prediction用としてmetadataを保存します"
             )
         metadata.update(sai_metadata)
 
-    print(f"saving model to: {args.save_to}")
-    save_to_file(args.save_to, state_dict, save_dtype, metadata)
+    logger.info(f"saving model to: {args.save_to}")
+    save_to_file(args.save_to, state_dict, metadata)
 
 
 def setup_parser() -> argparse.ArgumentParser:
